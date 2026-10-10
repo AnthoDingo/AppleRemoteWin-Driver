@@ -155,6 +155,42 @@ static COMP_URB: AtomicU32 = AtomicU32::new(0);
 static IN_ALL: AtomicU32 = AtomicU32::new(0);
 static IN_MDL: AtomicU32 = AtomicU32::new(0);
 static IN_NO_BUF: AtomicU32 = AtomicU32::new(0);
+/// Voix (bouton Siri) : la télécommande envoie des notifications plus longues que l'ATT MTU négocié ; Windows coupe alors la liaison.
+/// `ClientMtu`/`ServerMtu` = MTU demandé par Windows / accordé par la télécommande (échange 0x02/0x03), `AttMtu` = MTU retenu,
+/// `HitTrunc` = notifications tronquées à l'MTU, `LastL2capLen` = longueur d'origine de la dernière, `InCont` = fragments ACL de continuation.
+static CLIENT_MTU: AtomicU32 = AtomicU32::new(0);
+static SERVER_MTU: AtomicU32 = AtomicU32::new(0);
+static HIT_TRUNC: AtomicU32 = AtomicU32::new(0);
+static LAST_L2CAP_LEN: AtomicU32 = AtomicU32::new(0);
+static IN_CONT: AtomicU32 = AtomicU32::new(0);
+
+/// MTU ATT en vigueur : le plus petit des deux annoncés, 23 (minimum du protocole) tant que l'échange n'a pas eu lieu.
+fn att_mtu() -> u32 {
+    let (client, server) = (CLIENT_MTU.load(Ordering::Relaxed), SERVER_MTU.load(Ordering::Relaxed));
+    if client == 0 || server == 0 { 23 } else { client.min(server).max(23) }
+}
+
+/// Connexion de la télécommande = celle où passe notre déverrouillage (LastAcl) ; les autres appareils LE (souris…) sont ignorés.
+/// `RemoteNotify` = notifications reçues de la télécommande, `RemoteHandle`/`RemoteLen` = handle ATT et longueur du paquet de la dernière,
+/// `RemoteW0..2` = ses octets 8..20.
+static REMOTE_NOTIFY: AtomicU32 = AtomicU32::new(0);
+static REMOTE_HANDLE: AtomicU32 = AtomicU32::new(0);
+static REMOTE_LEN: AtomicU32 = AtomicU32::new(0);
+static REMOTE_W0: AtomicU32 = AtomicU32::new(0);
+static REMOTE_W1: AtomicU32 = AtomicU32::new(0);
+static REMOTE_W2: AtomicU32 = AtomicU32::new(0);
+
+/// `HitPad` = rapports courts de la télécommande (boutons) complétés à 20 octets.
+static HIT_PAD: AtomicU32 = AtomicU32::new(0);
+
+/// MTU ATT de la télécommande : elle répond 23 à l'échange (ServerMtu), quel que soit le MTU demandé par Windows.
+const REMOTE_ATT_MTU: u32 = 23;
+
+/// Handle de connexion ACL (12 bits) d'un paquet ACL.
+fn acl_of(b: &[u8]) -> u32 {
+    u32::from(b[0]) | (u32::from(b[1] & 0x0F) << 8)
+}
+
 static WORK_ITEM: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static DRIVER: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 
@@ -179,6 +215,19 @@ unsafe extern "C" fn flush_counters(_item: WDFWORKITEM) {
     static LAST_NOTIFY_NAME: [u16; 16] = wide(b"LastNotifyHandle");
     static IN_ANY_NAME: [u16; 5] = wide(b"InAny");
     static IN_ALL_NAME: [u16; 5] = wide(b"InAll");
+    static REMOTE_NOTIFY_NAME: [u16; 12] = wide(b"RemoteNotify");
+    static HIT_PAD_NAME: [u16; 6] = wide(b"HitPad");
+    static REMOTE_HANDLE_NAME: [u16; 12] = wide(b"RemoteHandle");
+    static REMOTE_LEN_NAME: [u16; 9] = wide(b"RemoteLen");
+    static REMOTE_W0_NAME: [u16; 8] = wide(b"RemoteW0");
+    static REMOTE_W1_NAME: [u16; 8] = wide(b"RemoteW1");
+    static REMOTE_W2_NAME: [u16; 8] = wide(b"RemoteW2");
+    static CLIENT_MTU_NAME: [u16; 9] = wide(b"ClientMtu");
+    static SERVER_MTU_NAME: [u16; 9] = wide(b"ServerMtu");
+    static ATT_MTU_NAME: [u16; 6] = wide(b"AttMtu");
+    static HIT_TRUNC_NAME: [u16; 8] = wide(b"HitTrunc");
+    static LAST_L2CAP_NAME: [u16; 12] = wide(b"LastL2capLen");
+    static IN_CONT_NAME: [u16; 6] = wide(b"InCont");
     static COMP_ALL_NAME: [u16; 7] = wide(b"CompAll");
     static COMP_URB_NAME: [u16; 7] = wide(b"CompUrb");
     static IN_MDL_NAME: [u16; 5] = wide(b"InMdl");
@@ -200,6 +249,19 @@ unsafe extern "C" fn flush_counters(_item: WDFWORKITEM) {
         set_dword(key as _, &LAST_NOTIFY_NAME, LAST_NOTIFY_HANDLE.load(Ordering::Relaxed));
         set_dword(key as _, &IN_ANY_NAME, IN_ANY.load(Ordering::Relaxed));
         set_dword(key as _, &IN_ALL_NAME, IN_ALL.load(Ordering::Relaxed));
+        set_dword(key as _, &REMOTE_NOTIFY_NAME, REMOTE_NOTIFY.load(Ordering::Relaxed));
+        set_dword(key as _, &HIT_PAD_NAME, HIT_PAD.load(Ordering::Relaxed));
+        set_dword(key as _, &REMOTE_HANDLE_NAME, REMOTE_HANDLE.load(Ordering::Relaxed));
+        set_dword(key as _, &REMOTE_LEN_NAME, REMOTE_LEN.load(Ordering::Relaxed));
+        set_dword(key as _, &REMOTE_W0_NAME, REMOTE_W0.load(Ordering::Relaxed));
+        set_dword(key as _, &REMOTE_W1_NAME, REMOTE_W1.load(Ordering::Relaxed));
+        set_dword(key as _, &REMOTE_W2_NAME, REMOTE_W2.load(Ordering::Relaxed));
+        set_dword(key as _, &CLIENT_MTU_NAME, CLIENT_MTU.load(Ordering::Relaxed));
+        set_dword(key as _, &SERVER_MTU_NAME, SERVER_MTU.load(Ordering::Relaxed));
+        set_dword(key as _, &ATT_MTU_NAME, att_mtu());
+        set_dword(key as _, &HIT_TRUNC_NAME, HIT_TRUNC.load(Ordering::Relaxed));
+        set_dword(key as _, &LAST_L2CAP_NAME, LAST_L2CAP_LEN.load(Ordering::Relaxed));
+        set_dword(key as _, &IN_CONT_NAME, IN_CONT.load(Ordering::Relaxed));
         set_dword(key as _, &COMP_ALL_NAME, COMP_ALL.load(Ordering::Relaxed));
         set_dword(key as _, &COMP_URB_NAME, COMP_URB.load(Ordering::Relaxed));
         set_dword(key as _, &IN_MDL_NAME, IN_MDL.load(Ordering::Relaxed));
@@ -314,6 +376,11 @@ unsafe extern "C" fn filter_evt_io_internal_device_control(
             let u = &*urb;
             if u.transfer_flags & USBD_TRANSFER_DIRECTION_IN == 0 && !u.transfer_buffer.is_null() {
                 let b = core::slice::from_raw_parts_mut(u.transfer_buffer, u.transfer_buffer_length as usize);
+                // Exchange MTU Request (0x02) : MTU que Windows est prêt à recevoir.
+                if b.len() >= 11 && b[6] == 0x04 && b[7] == 0x00 && b[8] == 0x02 {
+                    CLIENT_MTU.store(u32::from(b[9]) | (u32::from(b[10]) << 8), Ordering::Relaxed);
+                    request_flush();
+                }
                 match b.len() {
                     // écriture sans réponse (0x52) sur 0x28 -> écriture avec réponse (0x12) sur 0x1d (déverrouillage)
                     // (le handle de connexion ACL, b[0..2], dépend du contrôleur : on ne le teste pas)
@@ -345,9 +412,18 @@ unsafe extern "C" fn filter_evt_io_internal_device_control(
         }
     }
 
+    // Capacité d'un tampon de lecture, passée en contexte : à la complétion, TransferBufferLength ne vaut plus que la longueur reçue.
+    let mut capacity: usize = 0;
+    if ioctl == IOCTL_INTERNAL_USB_SUBMIT_URB {
+        let urb = urb_of(request);
+        if !urb.is_null() && (*urb).function == URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER && (*urb).transfer_flags & USBD_TRANSFER_DIRECTION_IN != 0 {
+            capacity = (*urb).transfer_buffer_length as usize;
+        }
+    }
+
     // Toujours avec routine de complétion (FORWARD_REQUEST_WITH_COMPLETION = 1 dans l'original).
     let _ = wdf!(WdfRequestFormatRequestUsingCurrentType, request);
-    wdf!(WdfRequestSetCompletionRoutine, request, Some(filter_request_completion), null_mut());
+    wdf!(WdfRequestSetCompletionRoutine, request, Some(filter_request_completion), capacity as *mut c_void);
     if wdf!(WdfRequestSend, request, target, null_mut()) == 0 {
         wdf!(WdfRequestComplete, request, wdf!(WdfRequestGetStatus, request));
     }
@@ -357,29 +433,31 @@ unsafe extern "C" fn filter_request_completion(
     request: WDFREQUEST,
     _target: WDFIOTARGET,
     params: PWDF_REQUEST_COMPLETION_PARAMS,
-    _context: WDFCONTEXT,
+    context: WDFCONTEXT,
 ) {
+    let capacity = context as usize as u32; // capacité du tampon de lecture (0 si inconnue)
     let status = (*params).IoStatus.__bindgen_anon_1.Status;
     let completed = COMP_ALL.fetch_add(1, Ordering::Relaxed) + 1;
     if completed <= 4 {
         request_flush();
     }
     if status >= 0 && ioctl_of(request) == IOCTL_INTERNAL_USB_SUBMIT_URB {
-        let urb = urb_of(request) as *const UrbBulk;
+        let urb = urb_of(request);
         if COMP_URB.fetch_add(1, Ordering::Relaxed) < 4 {
             request_flush();
         }
         if !urb.is_null() && (*urb).function == URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER {
-            let u = &*urb;
-            let in_ptr = if u.transfer_flags & USBD_TRANSFER_DIRECTION_IN == 0 {
+            let (flags, flat, mdl, length) =
+                ((*urb).transfer_flags, (*urb).transfer_buffer, (*urb).transfer_buffer_mdl, (*urb).transfer_buffer_length);
+            let in_ptr = if flags & USBD_TRANSFER_DIRECTION_IN == 0 {
                 null_mut()
             } else {
                 let all = IN_ALL.fetch_add(1, Ordering::Relaxed) + 1;
-                let ptr = if !u.transfer_buffer.is_null() {
-                    u.transfer_buffer
+                let ptr = if !flat.is_null() {
+                    flat
                 } else {
                     // BTHUSB décrit parfois ses tampons de lecture par un MDL plutôt que par un pointeur plat.
-                    let mapped = mdl_system_va(u.transfer_buffer_mdl);
+                    let mapped = mdl_system_va(mdl);
                     if mapped.is_null() { IN_NO_BUF.fetch_add(1, Ordering::Relaxed); } else { IN_MDL.fetch_add(1, Ordering::Relaxed); }
                     mapped
                 };
@@ -388,11 +466,41 @@ unsafe extern "C" fn filter_request_completion(
                 }
                 ptr
             };
-            if !in_ptr.is_null() && u.transfer_buffer_length > 10 {
-                let b = core::slice::from_raw_parts_mut(in_ptr, u.transfer_buffer_length as usize);
+            if !in_ptr.is_null() && length > 10 {
+                let b = core::slice::from_raw_parts_mut(in_ptr, length as usize);
                 IN_ANY.fetch_add(1, Ordering::Relaxed);
+                let boundary = b[1] & 0x30; // 0x20 = début de paquet L2CAP, 0x10 = fragment de continuation
+                if boundary == 0x10 {
+                    IN_CONT.fetch_add(1, Ordering::Relaxed);
+                }
+                if boundary == 0x20 && b[6] == 0x04 && b[7] == 0x00 {
+                    // Exchange MTU Response (0x03) : MTU accordé par la télécommande.
+                    if b[8] == 0x03 {
+                        SERVER_MTU.store(u32::from(b[9]) | (u32::from(b[10]) << 8), Ordering::Relaxed);
+                        request_flush();
+                    }
+                    // Notification plus longue que l'MTU (voix du bouton Siri) : Windows la refuse et coupe la liaison.
+                    // On la tronque à l'MTU (comme FIX_HCI_L2CAP_HEADERS du pilote C) : en-têtes L2CAP et HCI réduits, longueur URB
+                    // ajustée ; les fragments de continuation qui suivent sont ignorés par la pile.
+                    let l2cap = u32::from(b[4]) | (u32::from(b[5]) << 8);
+                    let hci = u32::from(b[2]) | (u32::from(b[3]) << 8);
+                    // Uniquement sur la connexion de la télécommande : une souris peut avoir un MTU plus grand et des paquets légitimes plus longs.
+                    let mtu = REMOTE_ATT_MTU;
+                    let remote = LAST_ACL.load(Ordering::Relaxed);
+                    if b[8] == 0x1b && remote != 0 && acl_of(b) == remote && l2cap > mtu && hci >= 4 + mtu {
+                        b[4] = mtu as u8;
+                        b[5] = (mtu >> 8) as u8;
+                        b[2] = (4 + mtu) as u8;
+                        b[3] = ((4 + mtu) >> 8) as u8;
+                        (*urb).transfer_buffer_length = 8 + mtu;
+                        LAST_L2CAP_LEN.store(l2cap, Ordering::Relaxed);
+                        if HIT_TRUNC.fetch_add(1, Ordering::Relaxed) < 8 {
+                            request_flush();
+                        }
+                    }
+                }
                 // Tout paquet ATT entrant (réponses d'écriture 0x13, erreurs 0x01, notifications 0x1b…) : on garde le dernier tel quel.
-                if b[3] == 0x00 && b[5] == 0x00 && b[6] == 0x04 && b[7] == 0x00 {
+                if b[3] == 0x00 && b[6] == 0x04 && b[7] == 0x00 {
                     let word = |at: usize| b.get(at..at + 4).map_or(0, |w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
                     LAST_ATT_LEN.store(b.len() as u32, Ordering::Relaxed);
                     LAST_ATT_W0.store(word(8), Ordering::Relaxed);
@@ -404,15 +512,52 @@ unsafe extern "C" fn filter_request_completion(
                     }
                 }
                 // Notification ATT (0x1b) sur le canal ATT (CID 4), quel que soit le handle de connexion ACL (b[0..2]).
-                if b[3] == 0x00 && b[5] == 0x00 && b[6] == 0x04 && b[7] == 0x00 && b[8] == 0x1b {
+                if b[3] == 0x00 && b[6] == 0x04 && b[7] == 0x00 && b[8] == 0x1b {
                     let handle = u32::from(b[9]) | (u32::from(b[10]) << 8);
                     LAST_NOTIFY_HANDLE.store(handle, Ordering::Relaxed);
+                    if acl_of(b) == LAST_ACL.load(Ordering::Relaxed) {
+                        let word = |at: usize| b.get(at..at + 4).map_or(0, |w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+                        REMOTE_HANDLE.store(handle, Ordering::Relaxed);
+                        REMOTE_LEN.store(b.len() as u32, Ordering::Relaxed);
+                        REMOTE_W0.store(word(8), Ordering::Relaxed);
+                        REMOTE_W1.store(word(12), Ordering::Relaxed);
+                        REMOTE_W2.store(word(16), Ordering::Relaxed);
+                        let mine = REMOTE_NOTIFY.fetch_add(1, Ordering::Relaxed) + 1;
+                        if mine <= 16 || mine % 32 == 0 {
+                            request_flush();
+                        }
+                    }
                     let seen = IN_NOTIFY.fetch_add(1, Ordering::Relaxed) + 1;
                     if seen <= 8 || seen % 64 == 0 {
                         request_flush();
                     }
                     if REWRITE_INBOUND.load(Ordering::Relaxed) && handle == 0x23 {
                         b[9] = 0x2b; // 0x23 (HID) -> 0x2b (BatteryPowerState)
+                    }
+                }
+                // Rapport court de la télécommande (boutons : 2 à 4 octets de données) : le pilote HID de Windows rejette tout rapport plus
+                // court que la taille déclarée (20 octets pour 0xFC) ; seuls les rapports pleine longueur (pavé, voix tronquée) passaient.
+                // On le complète par des zéros (le décodeur ne lit que ce que l'octet 1 annonce).
+                let remote = LAST_ACL.load(Ordering::Relaxed);
+                if b[1] & 0x30 == 0x20 && b[6] == 0x04 && b[7] == 0x00 && b[8] == 0x1b && b[9] == 0x23 && b[10] == 0x00
+                    && remote != 0 && acl_of(b) == remote
+                {
+                    const FULL_PDU: u32 = 3 + 20; // opcode + handle + valeur de 20 octets
+                    let l2cap = u32::from(b[4]) | (u32::from(b[5]) << 8);
+                    let hci = u32::from(b[2]) | (u32::from(b[3]) << 8);
+                    if l2cap >= 3 && l2cap < FULL_PDU && hci == 4 + l2cap && length == 4 + hci && capacity >= 8 + FULL_PDU {
+                        let full = core::slice::from_raw_parts_mut(in_ptr, (8 + FULL_PDU) as usize);
+                        for byte in &mut full[(8 + l2cap) as usize..] {
+                            *byte = 0;
+                        }
+                        full[2] = (4 + FULL_PDU) as u8;
+                        full[3] = 0;
+                        full[4] = FULL_PDU as u8;
+                        full[5] = 0;
+                        (*urb).transfer_buffer_length = 8 + FULL_PDU;
+                        if HIT_PAD.fetch_add(1, Ordering::Relaxed) < 8 {
+                            request_flush();
+                        }
                     }
                 }
             }
