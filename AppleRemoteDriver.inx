@@ -1,0 +1,66 @@
+;
+; AppleRemoteDriver.INF : INF d'extension (ne remplace pas le pilote Qualcomm : le BtFilter de chargement du firmware reste)
+; Ajoute le filtre inférieur KMDF AppleRemoteDriver sous BTHUSB de l'adaptateur Qualcomm QCA61x4A.
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Extension
+ClassGuid   = {e2f84ce7-8efa-411c-aa69-97454ca4cb57}
+Provider    = %ProviderName%
+ExtensionId = {7b0c4f5e-3a1d-4c6a-9d52-4f1e8a6b2c90}
+DriverVer   = ; stampinf
+CatalogFile = AppleRemoteDriver.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13 ; DIRID_DRIVER_STORE
+
+[Manufacturer]
+%StdMfg% = Standard,NTamd64.10.0...16299
+
+[Standard.NTamd64.10.0...16299]
+%AppleRemoteFilter.DeviceDesc% = AppleRemoteFilter, USB\VID_0CF3&PID_E007
+
+[AppleRemoteFilter.NT]
+CopyFiles = AppleRemoteFilter.NT.Copy
+
+[AppleRemoteFilter.NT.Copy]
+AppleRemoteDriver.sys
+
+[AppleRemoteFilter.NT.HW]
+AddReg = AppleRemoteFilter.NT.HW.AddReg
+
+[AppleRemoteFilter.NT.HW.AddReg]
+; FLG_ADDREG_TYPE_MULTI_SZ | FLG_ADDREG_APPEND : s'ajoute à la liste existante (BtFilter...)
+HKR,,"LowerFilters",0x00010008,"AppleRemoteDriver"
+
+[AppleRemoteFilter.NT.Services]
+; Pas de SPSVCINST_ASSOCSERVICE sur un filtre.
+AddService = AppleRemoteDriver,, AppleRemoteFilter_Service_Inst
+
+[AppleRemoteFilter_Service_Inst]
+DisplayName   = %Filter.SvcDesc%
+ServiceType   = 1 ; SERVICE_KERNEL_DRIVER
+StartType     = 3 ; SERVICE_DEMAND_START
+ErrorControl  = 1 ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\AppleRemoteDriver.sys
+
+[AppleRemoteFilter.NT.Wdf]
+KmdfService = AppleRemoteDriver, AppleRemoteFilter_wdfsect
+
+[AppleRemoteFilter_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[SourceDisksNames]
+1 = %DiskId1%,,,""
+
+[SourceDisksFiles]
+AppleRemoteDriver.sys = 1,,
+
+[Strings]
+ProviderName                = "AppleRemoteWin Community"
+StdMfg                      = "(Standard system devices)"
+DiskId1                     = "Apple Remote Filter Installation Disk #1"
+AppleRemoteFilter.DeviceDesc = "Apple Remote Filter"
+Filter.SvcDesc              = "Apple Remote Filter Driver"
