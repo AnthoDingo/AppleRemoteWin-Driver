@@ -29,3 +29,9 @@ cargo build --release
 ```
 
 The resulting `.sys` file will be in `target/release/`. You will then need to create an `.inf` file (you can adapt `filter.inx` from the original project) and sign the driver or enable test-signing mode on your Windows machine to install it.
+
+## License
+
+MIT, see `LICENSE`. This driver is a port of [Jack-R1/SiriRemoteDriver](https://github.com/Jack-R1/SiriRemoteDriver) (MIT, notice kept
+in `LICENSE-MIT-SiriRemoteDriver`), itself based on the Toaster sample of
+[Windows Driver Samples](https://github.com/microsoft/Windows-driver-samples) (MS-PL, see `LICENSE-MS-PL-Windows-driver-samples`).

@@ -1,4 +1,5 @@
-//! Filtre inférieur KMDF sous BTHUSB : port de `kmdf/filter/generic/filter.c` (Jack-R1/SiriRemoteDriver).
+//! Filtre inférieur KMDF sous BTHUSB : port de `kmdf/filter/generic/filter.c` (Jack-R1/SiriRemoteDriver, MIT),
+//! lui-même basé sur l'exemple Toaster des Windows Driver Samples de Microsoft (MS-PL). Voir les fichiers LICENSE*.
 //! Sortant : redirige l'écriture « déverrouillage » (0xAF) et l'abonnement vers les handles HID de la télécommande.
 //! Entrant : réécrit le handle de notification HID 0x23 en 0x2b (batterie) pour que Windows ne le jette pas.
 // ponytail: pas de périphérique de contrôle ni d'IOCTL de debug (FIX_HCI_L2CAP_HEADERS reste à FALSE comme dans l'original).
