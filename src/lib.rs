@@ -1,7 +1,8 @@
 //! Filtre inférieur KMDF sous BTHUSB : port de `kmdf/filter/generic/filter.c` (Jack-R1/SiriRemoteDriver, MIT),
 //! lui-même basé sur l'exemple Toaster des Windows Driver Samples de Microsoft (MS-PL). Voir les fichiers LICENSE*.
 //! Sortant : redirige l'écriture « déverrouillage » (0xAF) et l'abonnement vers les handles HID de la télécommande.
-//! Entrant : réécrit le handle de notification HID 0x23 en 0x2b (batterie) pour que Windows ne le jette pas.
+//! Entrant (optionnel, désactivé par défaut) : réécrit le handle de notification HID 0x23 en 0x2b (batterie), pour une appli qui
+//! lit le service batterie ; à ne pas activer quand Windows expose lui-même la collection HID (il ne verrait plus les rapports).
 // ponytail: pas de périphérique de contrôle ni d'IOCTL de debug (FIX_HCI_L2CAP_HEADERS reste à FALSE comme dans l'original).
 #![no_std]
 #![allow(non_snake_case)]
@@ -16,7 +17,7 @@ use wdk_alloc::WdkAllocator;
 #[global_allocator]
 static ALLOCATOR: WdkAllocator = WdkAllocator;
 
-use core::{ffi::c_void, mem::size_of, ptr::null_mut};
+use core::{ffi::c_void, mem::size_of, ptr::null_mut, sync::atomic::{AtomicBool, Ordering}};
 use wdk_sys::{
     call_unsafe_wdf_function_binding as wdf, NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT,
     PWDFDEVICE_INIT, PWDF_REQUEST_COMPLETION_PARAMS, ULONG, UNICODE_STRING, WDFCONTEXT, WDFDEVICE,
@@ -70,6 +71,29 @@ unsafe fn stage(driver: WDFDRIVER, value: u32) {
     }
 }
 
+/// Réécriture entrante 0x23 -> 0x2b : valeur DWORD `RewriteInbound` (0/1) dans `Services\AppleRemoteDriver\Parameters`, lue à chaque
+/// EvtDeviceAdd (redémarrer le périphérique pour l'appliquer). Absente = désactivée.
+static REWRITE_INBOUND: AtomicBool = AtomicBool::new(false);
+
+unsafe fn load_settings(driver: WDFDRIVER) {
+    static NAME: [u16; 14] = {
+        let src = *b"RewriteInbound";
+        let mut w = [0u16; 14];
+        let mut i = 0;
+        while i < 14 { w[i] = src[i] as u16; i += 1; }
+        w
+    };
+    let mut key = null_mut();
+    if wdf!(WdfDriverOpenParametersRegistryKey, driver, 0x0001 /* KEY_QUERY_VALUE */, null_mut(), &mut key) >= 0 {
+        let mut name = UNICODE_STRING { Length: 28, MaximumLength: 28, Buffer: NAME.as_ptr() as *mut u16 };
+        let mut value: ULONG = 0;
+        if wdf!(WdfRegistryQueryULong, key, &mut name, &mut value) >= 0 {
+            REWRITE_INBOUND.store(value != 0, Ordering::Relaxed);
+        }
+        wdf!(WdfRegistryClose, key);
+    }
+}
+
 #[export_name = "DriverEntry"]
 pub unsafe extern "system" fn driver_entry(
     driver: PDRIVER_OBJECT,
@@ -94,6 +118,7 @@ unsafe extern "C" fn filter_evt_device_add(
     mut device_init: PWDFDEVICE_INIT,
 ) -> NTSTATUS {
     wdk::println!("AppleRemoteDriver: EvtDeviceAdd");
+    load_settings(driver);
     stage(driver, 2);
     wdf!(WdfFdoInitSetFilter, device_init);
 
@@ -158,6 +183,12 @@ unsafe extern "C" fn filter_evt_io_internal_device_control(
                     13 if b[..] == [0x80, 0x00, 0x09, 0x00, 0x05, 0x00, 0x04, 0x00, 0x12, 0x29, 0x00, 0x01, 0x00] => {
                         b[9] = 0x24;
                     }
+                    // Windows lit la caractéristique Apple 0x3A (ce5ad0bc…) que la télécommande n'acquitte jamais : timeout ATT de 30 s,
+                    // liaison coupée, clé d'appairage supprimée. On lit à la place le niveau de batterie (0x28) : réponse valide et immédiate.
+                    11 if b[2..] == [0x07, 0x00, 0x03, 0x00, 0x04, 0x00, 0x0A, 0x3A, 0x00] => {
+                        wdk::println!("AppleRemoteDriver: lecture ATT 0x3A -> 0x28");
+                        b[9] = 0x28;
+                    }
                     _ => {}
                 }
             }
@@ -183,7 +214,8 @@ unsafe extern "C" fn filter_request_completion(
         let urb = urb_of(request) as *const UrbBulk;
         if !urb.is_null() && (*urb).function == URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER {
             let u = &*urb;
-            if u.transfer_flags & USBD_TRANSFER_DIRECTION_IN != 0
+            if REWRITE_INBOUND.load(Ordering::Relaxed)
+                && u.transfer_flags & USBD_TRANSFER_DIRECTION_IN != 0
                 && !u.transfer_buffer.is_null()
                 && u.transfer_buffer_length > 10
             {
