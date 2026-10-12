@@ -1,0 +1,56 @@
+name: Release
+
+# Push a tag (v1.0.0) or run manually with the version. Publishes AppleRemoteDriver.zip:
+# .sys, .inf, .cat and the test certificate (.cer), which must stay together (the .cat signs this .sys).
+on:
+  push:
+    tags: ["v[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag, e.g. v1.0.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/bin/cargo-make.exe
+            target
+          key: driver-${{ hashFiles('Cargo.lock') }}
+      - name: Install toolchain (WDK, LLVM, cargo-make)
+        shell: pwsh
+        run: |
+          winget install --id Microsoft.WindowsSDK.10.0.26100 --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+          winget install --id Microsoft.WindowsWDK.10.0.26100 --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+          choco install llvm -y --no-progress
+          if (-not (Get-Command cargo-make -ErrorAction SilentlyContinue)) { cargo install --locked cargo-make }
+      - name: Point Makefile.toml at the CI cargo registry
+        shell: bash
+        run: |
+          cargo fetch --locked
+          mk=$(cygpath -m "$(ls -d "$HOME"/.cargo/registry/src/*/wdk-build-0.3.0)")/rust-driver-makefile.toml
+          sed -i "s|^extend = .*|extend = [{ path = \"$mk\" }]|" Makefile.toml
+      - name: Build and sign
+        run: cargo make --profile release
+        env:
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      - name: Zip the package
+        shell: pwsh
+        run: |
+          $p = "target/release/AppleRemoteDriver_package"
+          Compress-Archive -DestinationPath AppleRemoteDriver.zip -Path "$p/AppleRemoteDriver.sys","$p/AppleRemoteDriver.inf","$p/appleremotedriver.cat","$p/WDRLocalTestCert.cer"
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.version || github.ref_name }}
+        run: gh release create "$TAG" AppleRemoteDriver.zip --title "$TAG" --generate-notes --target "$GITHUB_SHA"
